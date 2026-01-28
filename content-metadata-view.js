@@ -46,14 +46,64 @@ const appendTags = (value) => {
     return value;
 };
 
+// const cleanContent = (text) => {
+//     const lines = (text || "").split("\n");
+//     let result = [];
+
+//     for (let line of lines) {
+//         line = line.trim();
+//         if (!/^\s*(\w|-)+\s*::/.test(line) && !line.startsWith("%%")) {
+//             result.push(line.replace(/\s{2,}/g, " "));
+//         }
+//     }
+
+//     return result.join(" ") || "";
+// };
+
+
 const cleanContent = (text) => {
     const lines = (text || "").split("\n");
     let result = [];
 
     for (let line of lines) {
         line = line.trim();
-        if (!/^\s*(\w|-)+\s*::/.test(line) && !line.startsWith("%%")) {
-            result.push(line.replace(/\s{2,}/g, " "));
+
+        // Skip lines that start with metadata or comments
+        if (/^\s*(\w|-)+\s*::/.test(line) || line.startsWith("%%")) {
+            continue;
+        }
+
+        // Remove inline metadata (key:: value or [key:: value])
+        // Pattern 1: [key:: [[value]]] - bracketed key with wikilink value
+        line = line.replace(/\[[\w-]+::\s*\[\[([^\]]+)\]\]\]/g, '');
+
+        // Pattern 2: (key:: [[value]]) - parenthesized key with wikilink value
+        line = line.replace(/\([\w-]+::\s*\[\[([^\]]+)\]\]\)/g, '');
+
+        // Pattern 3: [key:: value] where value contains markdown link [text](url)
+        line = line.replace(/\[[\w-]+::\s*[^\]]*\[[^\]]+\]\([^)]+\)[^\]]*\]/g, '');
+
+        // Pattern 4: [key:: value] - general bracketed metadata
+        line = line.replace(/\[[\w-]+::[^\]]*\]/g, '');
+
+        // Pattern 5: (key::value) - parenthesized without spaces
+        line = line.replace(/\([\w-]+::[\w\d]+\)/g, '');
+
+        // Pattern 6: key:: value - unbracketed metadata (word-boundary aware)
+        line = line.replace(/\b[\w-]+::\s*[^\s\[]+/g, '');
+
+
+        // // Remove wiki-style links [[link]] or [[link|alias]]
+        // line = line.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '');
+
+        // // Remove markdown links [text](url)
+        // line = line.replace(/\[([^\]]+)\]\([^)]+\)/g, '');
+
+        // // Clean up extra whitespace
+        // line = line.replace(/\s{2,}/g, " ").trim();
+
+        if (line) {
+            result.push(line);
         }
     }
 
@@ -145,5 +195,5 @@ const rows = dv.pages()
 if (!rows.length) {
     dv.paragraph("⚠️ No matching list items found for this file.");
 } else {
-    dv.table(["Content", "Related & Sources", "Where"], rows);
+    dv.table(["Content", "Links & Metadata", "Where"], rows);
 }
