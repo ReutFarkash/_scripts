@@ -1,21 +1,45 @@
-// _scripts/content-metadata-view.js
+// _utils/_dataview_scripts/content-metadata-view.js
 
-// 1. SILENT GUARD: If dv is missing (e.g. running in Templater), exit immediately without error.
-if (typeof dv === "undefined") {
-    return;
-}
+// 1. SILENT GUARD
+if (typeof dv === "undefined") return;
 
-// 2. CONTEXT GUARD: If dv exists but the file context isn't ready, warn the user.
-// Guard: make sure dv is there and current file is available
-if (!dv || !dv.current || !dv.current() || !dv.current().file) {
+// 2. CONTEXT GUARD
+if (!dv.current || !dv.current() || !dv.current().file) {
     dv.paragraph("⚠️ Dataview current file context not ready.");
-    console.log("content-metadata-view: dv.current() not ready", { dvCurrent: dv.current && dv.current() });
     return;
 }
 
 // ===== CONFIG =====
-// Capture input parameters (Expects an array of strings, e.g., ["status", "priority"])
-const CUSTOM_COLUMNS = (input && Array.isArray(input)) ? input : [];
+let CUSTOM_COLUMNS = [];
+let SUBJECT = dv.current().file.name;
+let EXCLUDE_FOLDERS = ["_utils"];
+let EXCLUDE_CURRENT_FILE = false;
+let DEBUG_MODE = false; // Default off
+
+// Input Parsing
+if (typeof input !== "undefined") {
+    if (Array.isArray(input)) {
+        CUSTOM_COLUMNS = input;
+    } else if (typeof input === "object" && input !== null) {
+        if (input.columns && Array.isArray(input.columns)) CUSTOM_COLUMNS = input.columns;
+        if (input.subject) SUBJECT = input.subject;
+        if (input.exclude_folders !== undefined) {
+            EXCLUDE_FOLDERS = Array.isArray(input.exclude_folders) ? input.exclude_folders : [input.exclude_folders];
+        }
+        if (input.exclude_current !== undefined) EXCLUDE_CURRENT_FILE = !!input.exclude_current;
+        if (input.debug !== undefined) DEBUG_MODE = !!input.debug;
+    }
+}
+
+if (DEBUG_MODE) {
+    console.group("🔍 Content Metadata View Debug");
+    console.log("Configuration:", {
+        subject: SUBJECT,
+        excludeFolders: EXCLUDE_FOLDERS,
+        excludeCurrent: EXCLUDE_CURRENT_FILE,
+        currentFilePath: dv.current().file.path
+    });
+}
 
 const HIDE_KEYS = ["stuffff"];
 const METADATA_EXCLUDE_KEYS = [
@@ -62,13 +86,8 @@ const cleanContent = (text) => {
 
     for (let line of lines) {
         line = line.trim();
+        if (/^\s*(\w|-)+\s*::/.test(line) || line.startsWith("%%")) continue;
 
-        // Skip lines that start with metadata or comments
-        if (/^\s*(\w|-)+\s*::/.test(line) || line.startsWith("%%")) {
-            continue;
-        }
-
-        // Remove inline metadata patterns
         line = line.replace(/\[[\w-]+::\s*\[\[([^\]]+)\]\]\]/g, '');
         line = line.replace(/\([\w-]+::\s*\[\[([^\]]+)\]\]\)/g, '');
         line = line.replace(/\[[\w-]+::\s*[^\]]*\[[^\]]+\]\([^)]+\)[^\]]*\]/g, '');
@@ -76,18 +95,14 @@ const cleanContent = (text) => {
         line = line.replace(/\([\w-]+::[\w\d]+\)/g, '');
         line = line.replace(/\b[\w-]+::\s*[^\s\[]+/g, '');
 
-        if (line) {
-            result.push(line);
-        }
+        if (line) result.push(line);
     }
     return result.join(" ") || "";
 };
 
 const collectMetadata = (listItem) => {
     const metadata = {};
-    const excludeKeys = [...METADATA_EXCLUDE_KEYS, ...HIDE_KEYS].map((k) =>
-        k.toLowerCase()
-    );
+    const excludeKeys = [...METADATA_EXCLUDE_KEYS, ...HIDE_KEYS].map((k) => k.toLowerCase());
 
     for (const [key, value] of Object.entries(listItem)) {
         const lowerKey = key.toLowerCase();
@@ -104,15 +119,23 @@ const collectMetadata = (listItem) => {
     return metadata;
 };
 
-const isVisibleInCurrentFile = (listItem, currentFileID) => {
-    if (listItem.outlinks?.some((link) => normalizeToID(link) === currentFileID)) return true;
-    return normalizeToID(listItem.text).includes(currentFileID);
+const isVisible = (listItem, subject) => {
+    const rawSubject = String(subject).trim();
+    if (rawSubject.startsWith("#")) {
+        if (!listItem.tags || listItem.tags.length === 0) return false;
+        return listItem.tags.some(t => t.toLowerCase() === rawSubject.toLowerCase());
+    }
+    const subjectID = normalizeToID(rawSubject);
+    if (listItem.outlinks?.some((link) => normalizeToID(link) === subjectID)) return true;
+    return normalizeToID(listItem.text).includes(subjectID);
 };
 
-const getFilteredInternalLinks = (listItem, metadata, currentFileID) => {
+const getFilteredInternalLinks = (listItem, metadata, subject) => {
     if (!listItem.outlinks) return [];
 
-    const excludeIDs = new Set([currentFileID]);
+    const subjectID = normalizeToID(subject);
+    const excludeIDs = new Set([subjectID]);
+
     Object.values(metadata).forEach((values) => {
         values.forEach((value) => excludeIDs.add(normalizeToID(value)));
     });
@@ -122,11 +145,9 @@ const getFilteredInternalLinks = (listItem, metadata, currentFileID) => {
 
 const buildRelatedColumn = (internalLinks, metadata) => {
     const sections = [];
-
     if (internalLinks.length > 0) {
         sections.push(internalLinks.map(appendTags).join("<br>"));
     }
-
     Object.entries(metadata)
         .filter(([, values]) => values.size > 0)
         .sort(([a]) => a)
@@ -134,39 +155,52 @@ const buildRelatedColumn = (internalLinks, metadata) => {
             const label = key.charAt(0).toUpperCase() + key.slice(1);
             sections.push(`**${label}**: ${Array.from(values).map(appendTags).join(", ")}`);
         });
-
     return sections.join("<br>");
 };
 
 
-// ===== MAIN TABLE =====
-const currentFileID = normalizeToID(dv.current().file.name);
+// ===== MAIN EXECUTION =====
 
-const rows = dv.pages()
+// 1. Build Source Query String
+let sourceParts = [];
+
+EXCLUDE_FOLDERS.forEach(folder => {
+    const safeFolder = folder.replace(/"/g, '\\"');
+    sourceParts.push(`-"${safeFolder}"`);
+});
+
+if (EXCLUDE_CURRENT_FILE) {
+    const currentPath = dv.current().file.path;
+    const safePath = currentPath.replace(/"/g, '\\"');
+    sourceParts.push(`-"${safePath}"`);
+}
+
+const sourceQuery = sourceParts.length > 0 ? sourceParts.join(" AND ") : "";
+
+if (DEBUG_MODE) {
+    console.log("Source Query Generated:", sourceQuery || "(All Pages)");
+}
+
+const rows = dv.pages(sourceQuery)
     .flatMap((page) => page.file.lists)
     .map((listItem) => {
+
+        if (!isVisible(listItem, SUBJECT)) return null;
+
         const metadata = collectMetadata(listItem);
-
-        if (!isVisibleInCurrentFile(listItem, currentFileID)) return null;
-
         const content = cleanContent(listItem.text);
 
-        // --- PROCESS CUSTOM COLUMNS ---
         const customColumnValues = CUSTOM_COLUMNS.map(colName => {
-            // Find key case-insensitively
             const foundKey = Object.keys(metadata).find(k => k.toLowerCase() === colName.toLowerCase());
-
             if (foundKey) {
-                // Get value and format it
                 const val = Array.from(metadata[foundKey]).map(appendTags).join(", ");
-                // Remove it from metadata so it doesn't appear in "Links & Metadata"
                 delete metadata[foundKey];
                 return val;
             }
-            return ""; // Return empty string if key not found
+            return "";
         });
 
-        const internalLinks = getFilteredInternalLinks(listItem, metadata, currentFileID);
+        const internalLinks = getFilteredInternalLinks(listItem, metadata, SUBJECT);
         const relatedColumn = buildRelatedColumn(internalLinks, metadata);
         const whereColumn = listItem.link;
 
@@ -174,7 +208,6 @@ const rows = dv.pages()
         const sortKey = filePage?.file?.mtime || filePage?.file?.ctime;
 
         return {
-            // Unpack customColumnValues into the row array
             row: [content, ...customColumnValues, relatedColumn, whereColumn],
             sortKey
         };
@@ -183,16 +216,17 @@ const rows = dv.pages()
     .sort((a, b) => (b.sortKey < a.sortKey ? -1 : 1))
     .map((item) => item.row);
 
+if (DEBUG_MODE) {
+    console.log("Final Rows Count:", rows.length);
+    console.groupEnd();
+}
 
 // ===== RENDER =====
-
-// Dynamically build headers
-// Capitalize first letter of custom columns for display
 const customHeaders = CUSTOM_COLUMNS.map(c => c.charAt(0).toUpperCase() + c.slice(1));
 const tableHeaders = ["Content", ...customHeaders, "Links & Metadata", "Where"];
 
 if (!rows.length) {
-    dv.paragraph("⚠️ No matching list items found for this file.");
+    dv.paragraph(`⚠️ No list items found for: **${SUBJECT}**`);
 } else {
     dv.table(tableHeaders, rows);
 }
