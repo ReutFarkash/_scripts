@@ -77,19 +77,32 @@ const cleanContent = (text) => {
     }
     return result.join(" ") || "";
 };
-const collectMetadata = (listItem) => {
+const collectMetadata = (item, isPage = false) => {
     const metadata = {};
     const excludeKeys = [...METADATA_EXCLUDE_KEYS, ...HIDE_KEYS].map((k) => k.toLowerCase());
-    for (const [key, value] of Object.entries(listItem)) {
+
+    for (const [key, value] of Object.entries(item)) {
         const lowerKey = key.toLowerCase();
         if (!excludeKeys.includes(lowerKey) && value !== undefined && value !== null && value !== "") {
-            const values = Array.isArray(value) ? dv.array(value) : [value];
-            metadata[key] = new Set(values.map((v) => String(v).trim()).filter(Boolean));
+            // For pages, only collect frontmatter/page-level metadata
+            if (isPage && item.file) {
+                // Only include if it's in frontmatter or is a file.* property
+                if (item.file.frontmatter && item.file.frontmatter[key]) {
+                    const values = Array.isArray(value) ? dv.array(value) : [value];
+                    metadata[key] = new Set(values.map((v) => String(v).trim()).filter(Boolean));
+                }
+            } else {
+                // For list items, collect normally
+                const values = Array.isArray(value) ? dv.array(value) : [value];
+                metadata[key] = new Set(values.map((v) => String(v).trim()).filter(Boolean));
+            }
         }
     }
+
     Object.entries(metadata).forEach(([key, values]) => { if (values.size === 0) delete metadata[key]; });
     return metadata;
 };
+
 
 const matchesSubjectTag = (tags, subject) => {
     if (!tags || tags.length === 0) return false;
@@ -101,17 +114,29 @@ const matchesSubjectTag = (tags, subject) => {
 };
 
 // <--- FIX: Helper to get Frontmatter Tags Only --->
-// Dataview 'file.tags' includes inline tags. We want strict page-level tags.
 const getPageTags = (page) => {
     if (!page || !page.file) return [];
-    // Prefer 'etags' (Explicit Tags) if available, otherwise frontmatter.tags
-    if (page.file.etags) return page.file.etags;
+
+    // REMOVED: if (page.file.etags) return page.file.etags;
+    // REASON: etags includes inline tags from list items!
+
+    // Strict Frontmatter Check
     if (page.file.frontmatter && page.file.frontmatter.tags) {
-        const fmTags = page.file.frontmatter.tags;
-        return Array.isArray(fmTags) ? fmTags.map(t => "#" + t.replace(/^#/, "")) : [];
+        let fmTags = page.file.frontmatter.tags;
+
+        // Handle single string tag (e.g., tags: theory)
+        if (typeof fmTags === 'string') {
+            return ["#" + fmTags.replace(/^#/, "")];
+        }
+
+        // Handle list of tags (e.g., tags: [theory, dev])
+        if (Array.isArray(fmTags)) {
+            return fmTags.map(t => "#" + t.replace(/^#/, ""));
+        }
     }
     return [];
 };
+
 
 
 // 1. Check List Items (UPDATED)
@@ -186,7 +211,7 @@ pages.forEach(page => {
     if (SHOW_LISTS && page.file.lists) {
         page.file.lists.forEach((listItem) => {
             if (!isItemVisible(listItem, SUBJECT, page)) return;
-            const metadata = collectMetadata(listItem);
+            const metadata = collectMetadata(listItem, false); // false = not a page
             if (AUTO_COLUMNS) Object.keys(metadata).forEach(k => allKeys.add(k));
             allItems.push({ type: "list", item: listItem, metadata: metadata, sortKey: sortKey });
         });
@@ -194,10 +219,11 @@ pages.forEach(page => {
 
     // B. Collect Page
     if (SHOW_PAGES && isPageVisible(page, SUBJECT)) {
-        const metadata = collectMetadata(page);
+        const metadata = collectMetadata(page, true); // true = is a page
         if (AUTO_COLUMNS) Object.keys(metadata).forEach(k => allKeys.add(k));
         allItems.push({ type: "page", item: page, metadata: metadata, sortKey: sortKey });
     }
+
 });
 
 let displayColumns = AUTO_COLUMNS ? Array.from(allKeys).sort((a, b) => a.localeCompare(b)) : CUSTOM_COLUMNS;
