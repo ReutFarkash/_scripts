@@ -1,5 +1,11 @@
 // _scripts/content-metadata-view.js
 
+// 1. SILENT GUARD: If dv is missing (e.g. running in Templater), exit immediately without error.
+if (typeof dv === "undefined") {
+    return;
+}
+
+// 2. CONTEXT GUARD: If dv exists but the file context isn't ready, warn the user.
 // Guard: make sure dv is there and current file is available
 if (!dv || !dv.current || !dv.current() || !dv.current().file) {
     dv.paragraph("⚠️ Dataview current file context not ready.");
